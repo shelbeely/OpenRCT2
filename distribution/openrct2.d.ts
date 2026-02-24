@@ -504,6 +504,7 @@ declare global {
         subscribe(hook: "action.execute", callback: (e: GameActionEventArgs) => void): IDisposable;
         subscribe(hook: "action.location", callback: (e: ActionLocationArgs) => void): IDisposable;
         subscribe(hook: "action.query", callback: (e: GameActionEventArgs) => void): IDisposable;
+        subscribe(hook: "guest.decision", callback: (e: GuestDecisionArgs) => void): IDisposable;
         subscribe(hook: "guest.generation", callback: (e: GuestGenerationArgs) => void): IDisposable;
         subscribe(hook: "interval.day", callback: () => void): IDisposable;
         subscribe(hook: "interval.tick", callback: () => void): IDisposable;
@@ -634,6 +635,7 @@ declare global {
         "action.execute" |
         "action.location" |
         "action.query" |
+        "guest.decision" |
         "guest.generation" |
         "interval.day" |
         "interval.tick" |
@@ -1658,6 +1660,46 @@ declare global {
 
     interface GuestGenerationArgs {
         readonly id: number;
+    }
+
+    /**
+     * Event arguments for the "guest.decision" hook.
+     * Fires each time an aimlessly-wandering guest reaches a path junction and needs to
+     * choose a direction.  A plugin (or LLM-backed agent) may set `direction` to one of
+     * the bits present in `availableDirections` to override the default random walk.
+     * Directions follow the standard OpenRCT2 convention: 0 = north, 1 = east,
+     * 2 = south, 3 = west.
+     *
+     * Leave `direction` at -1 to let the built-in random walk decide.
+     */
+    interface GuestDecisionArgs {
+        /** Entity id of the guest. */
+        readonly id: number;
+        /** World x-coordinate of the guest (in units, 1 tile = 32). */
+        readonly x: number;
+        /** World y-coordinate of the guest. */
+        readonly y: number;
+        /** World z-coordinate of the guest. */
+        readonly z: number;
+        /** How hungry the guest is (0 = full, 255 = starving). */
+        readonly hunger: number;
+        /** How thirsty the guest is (0 = not thirsty, 255 = parched). */
+        readonly thirst: number;
+        /** How happy the guest is (0 = miserable, 255 = ecstatic). */
+        readonly happiness: number;
+        /** How nauseated the guest is (0 = fine, 255 = very sick). */
+        readonly nausea: number;
+        /**
+         * Bitmask of directions the guest can legally walk in from their current tile.
+         * Bit 0 = north (direction 0), bit 1 = east, bit 2 = south, bit 3 = west.
+         */
+        readonly availableDirections: number;
+        /**
+         * Set this to a direction index (0–3) that is present in `availableDirections`
+         * to steer the guest.  Any other value (including the default -1) leaves the
+         * built-in random pathfinding in control.
+         */
+        direction: number;
     }
 
     type VehicleCrashIntoType = "another_vehicle" | "land" | "water";
