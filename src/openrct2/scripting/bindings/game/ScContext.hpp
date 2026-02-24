@@ -14,6 +14,7 @@
     #include "../../../Game.h"
     #include "../../../OpenRCT2.h"
     #include "../../../actions/GameActionRunner.h"
+    #include "../../../core/Http.h"
     #include "../../../interface/Screenshot.h"
     #include "../../../localisation/Formatting.h"
     #include "../../../object/ObjectManager.h"
@@ -440,6 +441,72 @@ namespace OpenRCT2::Scripting
             return GetIconByName(iconName);
         }
 
+    #ifndef DISABLE_HTTP
+        /**
+         * Performs a synchronous HTTP request and returns the response.
+         * @param url    The URL to request.
+         * @param options  Optional object: { method?, body?, headers? }
+         * @returns { ok, status, body }
+         */
+        DukValue fetch(const std::string& url, const DukValue& options)
+        {
+            auto& scriptEngine = GetContext()->GetScriptEngine();
+            auto ctx = scriptEngine.GetContext();
+
+            Http::Request req;
+            req.url = url;
+
+            if (options.type() == DukValue::Type::OBJECT)
+            {
+                auto dukMethod = options["method"];
+                if (dukMethod.type() == DukValue::Type::STRING)
+                {
+                    auto method = dukMethod.as_string();
+                    if (method == "POST")
+                        req.method = Http::Method::POST;
+                    else if (method == "PUT")
+                        req.method = Http::Method::PUT;
+                }
+
+                auto dukBody = options["body"];
+                if (dukBody.type() == DukValue::Type::STRING)
+                    req.body = dukBody.as_string();
+
+                auto dukHeaders = options["headers"];
+                if (dukHeaders.type() == DukValue::Type::OBJECT)
+                {
+                    dukHeaders.push();
+                    duk_enum(ctx, -1, DUK_ENUM_OWN_PROPERTIES_ONLY);
+                    while (duk_next(ctx, -1, 1))
+                    {
+                        auto val = DukValue::take_from_stack(ctx, -1);
+                        auto key = DukValue::take_from_stack(ctx, -1);
+                        if (key.type() == DukValue::Type::STRING && val.type() == DukValue::Type::STRING)
+                            req.header[key.as_string()] = val.as_string();
+                    }
+                    duk_pop_2(ctx); // pop enum + headers object
+                }
+            }
+
+            DukObject obj(ctx);
+            try
+            {
+                auto res = Http::Do(req);
+                obj.Set("ok", res.status == Http::Status::Ok);
+                obj.Set("status", static_cast<int32_t>(res.status));
+                obj.Set("body", res.body);
+            }
+            catch (const std::exception& e)
+            {
+                obj.Set("ok", false);
+                obj.Set("status", 0);
+                obj.Set("body", "");
+                obj.Set("error", std::string(e.what()));
+            }
+            return obj.Take();
+        }
+    #endif // DISABLE_HTTP
+
     public:
         static void Register(duk_context* ctx)
         {
@@ -465,6 +532,9 @@ namespace OpenRCT2::Scripting
             dukglue_register_method(ctx, &ScContext::clearInterval, "clearInterval");
             dukglue_register_method(ctx, &ScContext::clearTimeout, "clearTimeout");
             dukglue_register_method(ctx, &ScContext::getIcon, "getIcon");
+    #ifndef DISABLE_HTTP
+            dukglue_register_method(ctx, &ScContext::fetch, "fetch");
+    #endif
         }
     };
 

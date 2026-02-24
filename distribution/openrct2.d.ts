@@ -550,6 +550,59 @@ declare global {
          * @param handle The numerical handle of the registered timeout to remove.
          */
         clearTimeout(handle: number): void;
+
+        /**
+         * Performs a **synchronous** HTTP request.
+         *
+         * This exposes the engine's built-in HTTP client (libcurl / WinHTTP) to
+         * scripts.  The method blocks the game thread until the response arrives,
+         * so keep targets fast and local (e.g. a loopback AI agent such as
+         * OpenClaw running at `http://127.0.0.1:18789`).
+         *
+         * Not available when the game is built with `DISABLE_HTTP`.
+         *
+         * @example
+         * // POST guest state to a local OpenClaw skill endpoint
+         * const res = context.fetch("http://127.0.0.1:18789/openrct2/decision", {
+         *     method: "POST",
+         *     body: JSON.stringify({ id: e.id, hunger: e.hunger }),
+         *     headers: { "Content-Type": "application/json" }
+         * });
+         * if (res.ok) {
+         *     const decision = JSON.parse(res.body);
+         *     e.direction = decision.direction;
+         * }
+         *
+         * @param url The target URL.
+         * @param options Optional request configuration.
+         * @returns The HTTP response.
+         */
+        fetch(url: string, options?: HttpFetchOptions): HttpFetchResponse;
+    }
+
+    /** Options passed to {@link Context.fetch}. */
+    interface HttpFetchOptions {
+        /** HTTP method to use.  Defaults to `"GET"`. */
+        method?: "GET" | "POST" | "PUT";
+        /** Request body as a string (e.g. a serialised JSON payload). */
+        body?: string;
+        /** Additional HTTP request headers. */
+        headers?: { [name: string]: string };
+    }
+
+    /** Response returned by {@link Context.fetch}. */
+    interface HttpFetchResponse {
+        /** `true` when the HTTP status code is 200. */
+        readonly ok: boolean;
+        /** Numeric HTTP status code (0 on connection error). */
+        readonly status: number;
+        /** Response body as a raw string. */
+        readonly body: string;
+        /**
+         * Set only when a network-level error prevented the request from
+         * completing (e.g. connection refused).
+         */
+        readonly error?: string;
     }
 
     interface Configuration {

@@ -1,0 +1,20 @@
+{
+  "id": "openrct2",
+  "name": "OpenRCT2 Bridge",
+  "version": "1.0.0",
+  "description": "Exposes OpenRCT2 game state as LLM-callable tools and provides a local HTTP decision endpoint for the OpenClaw agent runtime plugin.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "decisionPath": {
+        "type": "string",
+        "description": "URL path for the guest-decision HTTP endpoint (default: /openrct2/decision)."
+      },
+      "systemPrompt": {
+        "type": "string",
+        "description": "Optional system-prompt override sent to the LLM for each guest decision."
+      }
+    }
+  }
+}

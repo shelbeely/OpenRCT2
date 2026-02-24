@@ -79,6 +79,13 @@ var NEEDS_WEIGHT = 3;
 /** Maximum random noise added per direction to avoid deterministic herding. */
 var EXPLORATION_NOISE = 0.5;
 
+/**
+ * Base URL of the OpenClaw Gateway.
+ * The openclaw-skill plugin registers POST /openrct2/decision on this server.
+ * Override via config: context.configuration.get("openclaw.gatewayUrl")
+ */
+var OPENCLAW_DEFAULT_URL = "http://127.0.0.1:18789";
+
 // ─── OpenClaw runtime ────────────────────────────────────────────────────────
 
 var OpenClaw = (function () {
@@ -145,8 +152,8 @@ var DIR_DY = [-1, 0, 1, 0];
  * @param {number} dir
  */
 function tileStepForDirection(e, dir) {
-    var guestTileX = e.x / TILE_SIZE;
-    var guestTileY = e.y / TILE_SIZE;
+    var guestTileX = Math.floor(e.x / TILE_SIZE);
+    var guestTileY = Math.floor(e.y / TILE_SIZE);
     return {
         guestTileX: guestTileX,
         guestTileY: guestTileY,
@@ -228,13 +235,76 @@ OpenClaw.registerTool("explorationBonus", function (_guestId, _dir, _e) {
 
 // ─── Hook subscription ────────────────────────────────────────────────────────
 
+/**
+ * Try to ask the local OpenClaw Gateway skill for a direction decision.
+ * Returns a direction index (0–3) or -1 if the Gateway is unreachable or
+ * returned an error.
+ *
+ * Requires the `openclaw-skill` plugin to be loaded in the OpenClaw Gateway
+ * and `context.fetch` to be available (i.e. the game is not built with
+ * DISABLE_HTTP).
+ *
+ * @param {GuestDecisionArgs} e
+ * @param {string} gatewayUrl
+ * @returns {number}
+ */
+function queryOpenClawGateway(e, gatewayUrl) {
+    if (typeof context.fetch !== "function") return -1;
+
+    var payload = JSON.stringify({
+        id: e.id,
+        x: e.x,
+        y: e.y,
+        z: e.z,
+        hunger: e.hunger,
+        thirst: e.thirst,
+        happiness: e.happiness,
+        nausea: e.nausea,
+        availableDirections: e.availableDirections
+    });
+
+    var res = context.fetch(gatewayUrl + "/openrct2/decision", {
+        method: "POST",
+        body: payload,
+        headers: { "Content-Type": "application/json" }
+    });
+
+    if (!res.ok || !res.body) return -1;
+
+    try {
+        var data = JSON.parse(res.body);
+        var dir = data.direction;
+        if (typeof dir === "number" && dir >= 0 && dir < NUM_DIRECTIONS
+                && (e.availableDirections & (1 << dir))) {
+            return dir;
+        }
+    } catch (_err) {
+        // malformed JSON — fall through to built-in scoring
+    }
+    return -1;
+}
+
 function openClawMain() {
+    var cfg = context.configuration;
+    var gatewayUrl = (cfg && cfg.get("openclaw.gatewayUrl")) || OPENCLAW_DEFAULT_URL;
+
     context.subscribe("guest.decision", function (e) {
-        var chosen = OpenClaw.decide(e.id, e);
+        // ① Try the OpenClaw Gateway LLM agent first.
+        var chosen = queryOpenClawGateway(e, gatewayUrl);
+
+        // ② Fall back to the built-in tool-scoring heuristic when the Gateway
+        //    is unavailable (e.g. OpenClaw not running, HTTP disabled, etc.).
+        if (chosen < 0) {
+            chosen = OpenClaw.decide(e.id, e);
+        }
+
         if (chosen >= 0) {
             e.direction = chosen;
         }
     });
 
-    console.log("[OpenClaw] Agent runtime active — guests will make need-aware decisions at path junctions.");
+    var usingGateway = typeof context.fetch === "function"
+        ? "Gateway at " + gatewayUrl
+        : "built-in scoring (context.fetch unavailable)";
+    console.log("[OpenClaw] Agent runtime active — using " + usingGateway + ".");
 }
