@@ -1,0 +1,82 @@
+steps:
+  - name: Install system build tools
+    run: |
+      sudo apt-get update -qq
+      sudo apt-get install -y -qq \
+        build-essential cmake ninja-build python3 \
+        nlohmann-json3-dev libzip-dev libzstd-dev
+
+  - name: Install Emscripten SDK
+    run: |
+      git clone --depth=1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+      /opt/emsdk/emsdk install latest
+      /opt/emsdk/emsdk activate latest
+      echo "/opt/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+      echo "/opt/emsdk/upstream/bin" >> "$GITHUB_PATH"
+      EMSDK_NODE_BIN=$(find /opt/emsdk/node -maxdepth 3 -name 'node' -type f | head -1 | xargs -r dirname)
+      echo "$EMSDK_NODE_BIN" >> "$GITHUB_PATH"
+      echo "EMSDK=/opt/emsdk" >> "$GITHUB_ENV"
+      echo "EM_CONFIG=/opt/emsdk/.emscripten" >> "$GITHUB_ENV"
+
+  - name: Build zstd for WASM
+    run: |
+      set -e
+      sudo mkdir -p /ext && sudo chown -R "$USER:$USER" /ext
+      git clone --depth=1 --branch v1.5.6 \
+        https://github.com/facebook/zstd.git /ext/zstd
+      emcmake cmake /ext/zstd/build/cmake \
+        -G Ninja -B /ext/zstd/build/build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DZSTD_BUILD_PROGRAMS=OFF \
+        -DZSTD_BUILD_SHARED=OFF \
+        -DZSTD_BUILD_TESTS=OFF
+      emmake ninja -C /ext/zstd/build/build
+
+  - name: Build libzip for WASM
+    run: |
+      set -e
+      embuilder build zlib
+      EMSDK_SYSROOT=$(emcc --print-sysroot)
+      git clone --depth=1 --branch v1.10.1 \
+        https://github.com/nih-at/libzip.git /tmp/libzip-src
+      emcmake cmake /tmp/libzip-src \
+        -G Ninja -B /tmp/libzip-build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DENABLE_COMMONCRYPTO=OFF \
+        -DENABLE_GNUTLS=OFF \
+        -DENABLE_MBEDTLS=OFF \
+        -DENABLE_OPENSSL=OFF \
+        -DENABLE_WINDOWS_CRYPTO=OFF \
+        -DENABLE_BZIP2=OFF \
+        -DENABLE_LZMA=OFF \
+        -DENABLE_ZSTD=OFF \
+        -DZLIB_LIBRARY="${EMSDK_SYSROOT}/lib/wasm32-emscripten/libz.a" \
+        -DZLIB_INCLUDE_DIR="${EMSDK_SYSROOT}/include" \
+        -DCMAKE_INSTALL_PREFIX=/ext/libzip/build
+      emmake ninja -C /tmp/libzip-build install
+
+  - name: Build ICU for WASM
+    run: |
+      set -e
+      curl -fsSL -o /tmp/icu4c.tgz \
+        https://github.com/unicode-org/icu/releases/download/release-74-2/icu4c-74_2-src.tgz
+      mkdir -p /ext/icu
+      tar -xzf /tmp/icu4c.tgz -C /ext/icu
+      # Build native ICU first — required as cross-compilation host tools
+      mkdir -p /tmp/icu-native-build
+      cd /tmp/icu-native-build
+      /ext/icu/icu4c/source/runConfigureICU Linux \
+        --disable-tests --disable-samples --disable-extras
+      make -j$(nproc)
+      # Cross-compile ICU for WASM in-source so the library files land at
+      # the paths expected by scripts/build-emscripten:
+      #   /ext/icu/icu4c/source/lib/libicuuc.so
+      #   /ext/icu/icu4c/source/stubdata/libicudata.so
+      cd /ext/icu/icu4c/source
+      emconfigure ./configure \
+        --with-cross-build=/tmp/icu-native-build \
+        --disable-tests --disable-samples --disable-extras \
+        --disable-icuio \
+        --with-data-packaging=static
+      emmake make -j$(nproc)
