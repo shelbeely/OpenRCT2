@@ -1,0 +1,15 @@
+{
+  "name": "openrct2-copilot-advisor-server",
+  "version": "1.0.0",
+  "description": "Companion server for the OpenRCT2 Copilot Park Advisor plugin",
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "^0.1.26"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
