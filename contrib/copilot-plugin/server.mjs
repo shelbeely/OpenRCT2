@@ -1,21 +1,28 @@
 /**
- * Copilot Park Advisor – companion server
+ * Copilot Plugin Suite – companion server
  *
  * Listens on TCP localhost:9001 for newline-delimited JSON messages sent by
- * the OpenRCT2 plugin.  Each message is forwarded to the GitHub Copilot SDK
- * (or a BYOK provider) and the AI reply is written back to the same socket.
+ * the four OpenRCT2 Copilot plugins. Each message is forwarded to the GitHub
+ * Copilot SDK (or a BYOK provider) and the AI reply is written back.
  *
  * Protocol
  * --------
- * Plugin  → server:  {"type":"query","parkData":{...}}\n
+ * Plugin  → server:  {"type":"<query-type>", ...data}\n
  * Server  → plugin:  {"type":"response","content":"..."}\n
  *                or  {"type":"error","content":"..."}\n
  *
+ * Query types
+ * -----------
+ *   park-advisor   – general park management advice   (plugin.js)
+ *   ride-name      – creative ride name suggestions   (ride-namer.js)
+ *   guest-mood     – guest happiness analysis         (guest-mood.js)
+ *   scenario-coach – scenario completion strategy     (scenario-coach.js)
+ *
  * Authentication
  * --------------
- * By default the server authenticates through the GitHub Copilot CLI that is
- * bundled as a transitive npm dependency.  To use a BYOK provider instead,
- * set these environment variables before starting the server:
+ * By default the server authenticates through the GitHub Copilot CLI bundled
+ * as a transitive npm dependency (@github/copilot).  To use a BYOK provider
+ * instead, set these environment variables before starting the server:
  *
  *   BYOK_PROVIDER   – "openai" | "azure" | "anthropic"  (default: "openai")
  *   BYOK_BASE_URL   – full API base URL, e.g. https://api.openai.com/v1
@@ -60,9 +67,10 @@ function getByokProvider() {
 }
 
 // ---------------------------------------------------------------------------
-// Build the prompt that will be sent to the AI model.
+// Prompt builders – one per plugin query type
 // ---------------------------------------------------------------------------
-function buildPrompt(parkData) {
+
+function buildParkAdvisorPrompt(parkData) {
     var rides = (parkData.rides || []).map(function (r) {
         return r.name + ' (excitement:' + r.excitement + ', intensity:' + r.intensity +
                ', nausea:' + r.nausea + ', status:' + r.status + ')';
@@ -79,6 +87,67 @@ function buildPrompt(parkData) {
         'Bank loan: $' + (parkData.bankLoan / 10).toFixed(2) + '\n' +
         'Park value: $' + (parkData.value / 10).toFixed(2) + '\n' +
         'Rides: ' + rides;
+}
+
+function buildRideNamePrompt(ride) {
+    return 'You are a creative theme-park ride designer.\n' +
+        'Suggest exactly 5 short, memorable names for the ride described below.\n' +
+        'Each name must be on its own numbered line (e.g. "1. Thunderbolt").\n' +
+        'Keep each name under 25 characters. No extra explanation.\n\n' +
+        'Current name: ' + (ride.name || 'Unknown') + '\n' +
+        'Classification: ' + (ride.classification || 'ride') + '\n' +
+        'Excitement rating: ' + (ride.excitement || '?') + '/10\n' +
+        'Intensity rating: ' + (ride.intensity || '?') + '/10\n' +
+        'Nausea rating: ' + (ride.nausea || '?') + '/10\n' +
+        'Age: ' + (ride.age || 0) + ' months\n' +
+        'Total customers served: ' + (ride.totalCustomers || 0);
+}
+
+function buildGuestMoodPrompt(stats) {
+    return 'You are a guest experience analyst for a theme park.\n' +
+        'Analyse the following aggregate guest data and give exactly 3 concise,\n' +
+        'actionable recommendations. Keep your answer under 200 words.\n\n' +
+        'Total guests in park: ' + (stats.totalGuests || 0) + '\n' +
+        'Sampled guests: ' + (stats.sampledGuests || 0) + '\n' +
+        'Average happiness (0–255, higher is better): ' + (stats.avgHappiness || 0) + '\n' +
+        'Average nausea (0–255, lower is better): ' + (stats.avgNausea || 0) + '\n' +
+        'Average hunger (0–255, lower = more hungry): ' + (stats.avgHunger || 0) + '\n' +
+        'Average thirst (0–255, lower = more thirsty): ' + (stats.avgThirst || 0) + '\n' +
+        'Lost guests: ' + (stats.lostGuests || 0) + '\n' +
+        'Most common thoughts: ' + ((stats.topThoughts || []).join(', ') || 'none');
+}
+
+function buildScenarioCoachPrompt(data) {
+    var deadline = (data.yearsRemaining !== null && data.yearsRemaining !== undefined)
+        ? data.yearsRemaining + ' year(s) remaining (deadline: year ' + data.deadlineYear + ')'
+        : 'no fixed deadline';
+    return 'You are a scenario completion coach for a theme-park management game.\n' +
+        'Provide a focused, step-by-step strategy (max 250 words) to help the\n' +
+        'player complete their objective.\n\n' +
+        'Scenario: ' + (data.scenarioName || 'Unknown') + '\n' +
+        'Objective type: ' + (data.objectiveType || 'unknown') + '\n' +
+        'Target guests: ' + (data.targetGuests || 'N/A') + '\n' +
+        'Target park value: $' + ((data.targetParkValue || 0) / 10).toFixed(0) + '\n' +
+        'Deadline: ' + deadline + '\n\n' +
+        'Current status:\n' +
+        'Year: ' + (data.currentYear || 1) + '\n' +
+        'Park rating: ' + (data.parkRating || 0) + '/999\n' +
+        'Current guests: ' + (data.currentGuests || 0) + '\n' +
+        'Cash: $' + ((data.currentCash || 0) / 10).toFixed(2) + '\n' +
+        'Bank loan: $' + ((data.currentBankLoan || 0) / 10).toFixed(2) + '\n' +
+        'Park value: $' + ((data.currentParkValue || 0) / 10).toFixed(0) + '\n' +
+        'Number of rides: ' + (data.rideCount || 0);
+}
+
+// Route a parsed message to the correct prompt builder.
+function buildPrompt(message) {
+    switch (message.type) {
+        case 'park-advisor':    return buildParkAdvisorPrompt(message.parkData || {});
+        case 'ride-name':       return buildRideNamePrompt(message.ride || {});
+        case 'guest-mood':      return buildGuestMoodPrompt(message.stats || {});
+        case 'scenario-coach':  return buildScenarioCoachPrompt(message.data || {});
+        default:                return null;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +192,13 @@ const tcpServer = net.createServer(function (socket) {
                 continue;
             }
 
-            if (message.type !== 'query') continue;
+            var prompt = buildPrompt(message);
+            if (prompt === null) {
+                socket.write(JSON.stringify({ type: 'error', content: 'Unknown query type: ' + message.type }) + '\n');
+                continue;
+            }
 
-            var prompt = buildPrompt(message.parkData || {});
-            var session;
-            try {
+            var session;            try {
                 var sessionConfig = {
                     model: process.env.BYOK_MODEL || 'gpt-4o',
                 };
@@ -161,8 +232,8 @@ const tcpServer = net.createServer(function (socket) {
 });
 
 tcpServer.listen(PORT, HOST, function () {
-    console.log('Copilot Park Advisor server listening on ' + HOST + ':' + PORT);
-    console.log('Place plugin.js in your OpenRCT2 plugin directory and open a park.');
+    console.log('Copilot Plugin Suite server listening on ' + HOST + ':' + PORT);
+    console.log('Copy plugin.js, ride-namer.js, guest-mood.js, scenario-coach.js to your OpenRCT2 plugin directory.');
 });
 
 process.on('SIGINT', async function () {
