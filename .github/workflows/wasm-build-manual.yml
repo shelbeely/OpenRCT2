@@ -1,0 +1,154 @@
+name: Build WASM Artifacts (Manual Setup)
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'src/**'
+      - 'CMakeLists.txt'
+      - 'scripts/build-emscripten'
+      - 'emscripten/**'
+  workflow_dispatch:
+
+jobs:
+  build-wasm-manual:
+    name: Build and publish WASM (manual setup)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    env:
+      ICU_VERSION: '74.2'
+      LIBZIP_VERSION: '1.10.1'
+      ZSTD_VERSION: '1.5.6'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake ninja-build python3 \
+            nlohmann-json3-dev libzip-dev libzstd-dev
+
+      - name: Set up Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: '.emsdk-cache'
+
+      - name: Get Emscripten version
+        id: emcc-version
+        run: echo "version=$(emcc --version | grep -oP '\d+\.\d+\.\d+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      # /ext is an absolute path required by scripts/build-emscripten which
+      # hard-codes /ext/icu, /ext/libzip, and /ext/zstd.
+      - name: Cache WASM dependencies
+        id: cache-wasm-deps
+        uses: actions/cache@v4
+        with:
+          path: /ext
+          key: wasm-deps-icu${{ env.ICU_VERSION }}-libzip${{ env.LIBZIP_VERSION }}-zstd${{ env.ZSTD_VERSION }}-emcc${{ steps.emcc-version.outputs.version }}-${{ runner.os }}
+
+      - name: Build WASM dependencies
+        if: steps.cache-wasm-deps.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          sudo mkdir -p /ext && sudo chown -R "$USER:$USER" /ext
+
+          # --- zstd ---
+          git clone --depth=1 --branch "v${ZSTD_VERSION}" \
+            https://github.com/facebook/zstd.git /ext/zstd
+          emcmake cmake /ext/zstd/build/cmake \
+            -G Ninja -B /ext/zstd/build/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DZSTD_BUILD_PROGRAMS=OFF \
+            -DZSTD_BUILD_SHARED=OFF \
+            -DZSTD_BUILD_TESTS=OFF
+          emmake ninja -C /ext/zstd/build/build
+
+          # --- libzip ---
+          embuilder build zlib
+          EMSDK_SYSROOT=$(emcc --print-sysroot)
+          git clone --depth=1 --branch "v${LIBZIP_VERSION}" \
+            https://github.com/nih-at/libzip.git /tmp/libzip-src
+          emcmake cmake /tmp/libzip-src \
+            -G Ninja -B /tmp/libzip-build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DENABLE_COMMONCRYPTO=OFF \
+            -DENABLE_GNUTLS=OFF \
+            -DENABLE_MBEDTLS=OFF \
+            -DENABLE_OPENSSL=OFF \
+            -DENABLE_WINDOWS_CRYPTO=OFF \
+            -DENABLE_BZIP2=OFF \
+            -DENABLE_LZMA=OFF \
+            -DENABLE_ZSTD=OFF \
+            -DZLIB_LIBRARY="${EMSDK_SYSROOT}/lib/wasm32-emscripten/libz.a" \
+            -DZLIB_INCLUDE_DIR="${EMSDK_SYSROOT}/include" \
+            -DCMAKE_INSTALL_PREFIX=/ext/libzip/build
+          emmake ninja -C /tmp/libzip-build install
+
+          # --- ICU ---
+          ICU_MAJOR=$(echo "${ICU_VERSION}" | cut -d. -f1)
+          ICU_MINOR=$(echo "${ICU_VERSION}" | cut -d. -f2)
+          curl -fsSL -o /tmp/icu4c.tgz \
+            "https://github.com/unicode-org/icu/releases/download/release-${ICU_MAJOR}-${ICU_MINOR}/icu4c-${ICU_MAJOR}_${ICU_MINOR}-src.tgz"
+          mkdir -p /ext/icu
+          tar -xzf /tmp/icu4c.tgz -C /ext/icu
+          # Build native ICU first — required as cross-compilation host tools
+          mkdir -p /tmp/icu-native-build
+          cd /tmp/icu-native-build
+          /ext/icu/icu4c/source/runConfigureICU Linux \
+            --disable-tests --disable-samples --disable-extras
+          make -j$(nproc)
+          # Cross-compile ICU for WASM in-source so library files land at
+          # the paths expected by scripts/build-emscripten:
+          #   /ext/icu/icu4c/source/lib/libicuuc.so
+          #   /ext/icu/icu4c/source/stubdata/libicudata.so
+          cd /ext/icu/icu4c/source
+          emconfigure ./configure \
+            --with-cross-build=/tmp/icu-native-build \
+            --disable-tests --disable-samples --disable-extras \
+            --disable-icuio \
+            --with-data-packaging=static
+          emmake make -j$(nproc)
+
+      - name: Build OpenRCT2 WASM
+        run: bash scripts/build-emscripten
+
+      - name: Install git-lfs
+        run: |
+          command -v git-lfs 2>/dev/null || (sudo apt-get update -qq && sudo apt-get install -y -qq git-lfs)
+          git lfs install --skip-repo
+
+      - name: Publish artifacts to wasm-artifacts branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+          git config --global --add safe.directory '*'
+
+          WORK=$(mktemp -d)
+          cd "$WORK"
+          git init
+          git lfs install
+
+          printf '*.wasm filter=lfs diff=lfs merge=lfs -text\n*.zip filter=lfs diff=lfs merge=lfs -text\n' \
+            > .gitattributes
+
+          cp "$GITHUB_WORKSPACE/build/www/openrct2.js"   .
+          cp "$GITHUB_WORKSPACE/build/www/openrct2.wasm" .
+          cp "$GITHUB_WORKSPACE/build/www/openrct2.zip"  .
+
+          git add .gitattributes openrct2.js openrct2.wasm openrct2.zip
+          git commit -m "wasm build (manual): ${GITHUB_SHA::8} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+
+          git remote add origin \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:wasm-artifacts --force
