@@ -25,11 +25,6 @@ jobs:
       - name: Build OpenRCT2 WASM
         run: bash scripts/build-emscripten
 
-      - name: Install git-lfs
-        run: |
-          command -v git-lfs 2>/dev/null || dnf install -y git-lfs
-          git lfs install --skip-repo
-
       - name: Publish artifacts to wasm-artifacts branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,18 +39,13 @@ jobs:
           WORK=$(mktemp -d)
           cd "$WORK"
           git init
-          git lfs install
-
-          # Track large binary types with LFS
-          printf '*.wasm filter=lfs diff=lfs merge=lfs -text\n*.zip filter=lfs diff=lfs merge=lfs -text\n' \
-            > .gitattributes
 
           # Copy build outputs
           cp "$GITHUB_WORKSPACE/build/www/openrct2.js"   .
           cp "$GITHUB_WORKSPACE/build/www/openrct2.wasm" .
           cp "$GITHUB_WORKSPACE/build/www/openrct2.zip"  .
 
-          git add .gitattributes openrct2.js openrct2.wasm openrct2.zip
+          git add openrct2.js openrct2.wasm openrct2.zip
           git commit -m "wasm build: ${GITHUB_SHA::8} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
 
           # Force-push to the wasm-artifacts branch (consumed by browser-native-OS submodule)
