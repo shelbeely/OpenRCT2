@@ -11,6 +11,7 @@
 
 #include "../Diagnostic.h"
 #include "../GameState.h"
+#include "../Context.h"
 #include "../core/Guard.hpp"
 #include "../entity/Guest.h"
 #include "../entity/Staff.h"
@@ -19,6 +20,7 @@
 #include "../ride/Station.h"
 #include "../ride/Track.h"
 #include "../scenario/Scenario.h"
+#include "../scripting/ScriptEngine.h"
 #include "../world/Entrance.h"
 #include "../world/Footpath.h"
 #include "../world/Map.h"
@@ -540,6 +542,37 @@ namespace OpenRCT2::PathFinding
      */
     static int32_t GuestPathfindAimless(Peep& peep, uint8_t edges)
     {
+#ifdef ENABLE_SCRIPTING
+        auto* guest = peep.As<Guest>();
+        if (guest != nullptr)
+        {
+            auto* context = GetContext();
+            auto& hookEngine = context->GetScriptEngine().GetHookEngine();
+            if (hookEngine.HasSubscriptions(Scripting::HookType::guestDecision))
+            {
+                auto ctx = context->GetScriptEngine().GetContext();
+                auto obj = Scripting::DukObject(ctx);
+                obj.Set("id", peep.Id.ToUnderlying());
+                obj.Set("x", peep.x);
+                obj.Set("y", peep.y);
+                obj.Set("z", peep.z);
+                obj.Set("hunger", static_cast<int32_t>(guest->Hunger));
+                obj.Set("thirst", static_cast<int32_t>(guest->Thirst));
+                obj.Set("happiness", static_cast<int32_t>(guest->Happiness));
+                obj.Set("nausea", static_cast<int32_t>(guest->Nausea));
+                obj.Set("availableDirections", static_cast<int32_t>(edges));
+                obj.Set("direction", -1);
+                auto e = obj.Take();
+                hookEngine.Call(Scripting::HookType::guestDecision, e, true);
+                auto overrideDirection = Scripting::AsOrDefault(e["direction"], -1);
+                if (overrideDirection >= 0 && overrideDirection < kNumOrthogonalDirections
+                    && (edges & (1 << overrideDirection)))
+                {
+                    return PeepMoveOneTile(static_cast<Direction>(overrideDirection), peep);
+                }
+            }
+        }
+#endif
         if (ScenarioRand() & 1)
         {
             // If possible go straight
